@@ -1,91 +1,99 @@
-//CI Pipeline
+// CI Pipeline
 // @Library("Shared_lib") _
 
-pipeline{
-  agent any
-  
-  environment {
-        SCANNER_HOME = tool 'Sonar'
-    }
-  
-  parameters{
-    string(name: 'FRONTEND_IMAGE_TAG', defaultValue: '', description: 'Docker Image for frontend')
-    string(name: 'BACKEND_IMAGE_TAG', defaultValue: '', description: 'Docker Image for backend')
-    }
-  
-  stages{
+pipeline {
+    agent any
     
-    stage("Git Checkout"){
-      steps{
-      git url:"https://github.com/DevMadhup/Wanderlust-Mega-Project.git",branch:"main
-    }
+    environment {
+        // Is variable ka naam niche sh command mein sahi match hona chahiye
+        SONAR_HOME = tool 'Sonar'
     }
     
-    stage("Trivy filesystem check"){
-      steps{
-        $ trivy fs .
-    }
-    }
-    
-    stage("Owasp dependency checks"){
-      steps{
-      //Scans requirements.txt/package.json 
-            dependencyCheck odcInstallation: 'OWASP', additionalArguments: '--scan ./'       
-      // Report generation
-            dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
-    }
+    parameters {
+        string(name: 'FRONTEND_IMAGE_TAG', defaultValue: '', description: 'Docker Image for frontend')
+        string(name: 'BACKEND_IMAGE_TAG', defaultValue: '', description: 'Docker Image for backend')
     }
     
-    stage("Sonarqube code analysis"){
-       steps{
-         withSonarQubeEnv("Sonar-Server"){
-         sh "$SONAR_HOME/bin/sonar-scanner -Dsonar.projectName="wanderlust-app" -Dsonar.projectKey="wanderlust -X"
-  }
-    }
-  }
-  
-   stage("Sonarqube code quality gates"){
-     steps{
-     //if code is of bad quality,stop the pipeine
-      timeout(time: 1, unit: "MINUTES"){
-      waitForQualityGate abortPipeline: true
-  }
-   }
-   }
-    
-    stage("Docker: Build Images"){
-            steps{
-              dir('backend'){
-                 sh "docker build -t zahramurtaza/wanderlust-backend-beta:${BACKEND_IMAGE_TAG} ."
-              }
-              dir('frontend'){
-                 sh "docker build -t zahramurtaza/wanderlust-frontend-beta:${FRONTEND_IMAGE_TAG} ."
-              }
-    }
-    }
+    stages {
+        
+        stage("Git Checkout") {
+            steps {
+                git url: "https://github.com/DevMadhup/Wanderlust-Mega-Project.git", branch: "main"
+            }
+        }
+        
+        stage("Trivy filesystem check") {
+            steps {
+                sh "trivy fs ."
+            }
+        }
+        
+        stage("Owasp dependency checks") {
+            steps {
+                // Scans requirements.txt/package.json 
+                dependencyCheck odcInstallation: 'OWASP', additionalArguments: '--scan ./'       
+                // Report generation
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            }
+        }
+        
+        stage("Sonarqube code analysis") {
+            steps {
+                withSonarQubeEnv("Sonar-Server") {
+                    // Single quotes use kiye taake andar double quotes bina crash chaley
+                    sh "${SONAR_HOME}/bin/sonar-scanner -Dsonar.projectName='wanderlust-app' -Dsonar.projectKey='wanderlust' -X"
+                }
+            }
+        }
+        
+        stage("Sonarqube code quality gates") {
+            steps {
+                timeout(time: 1, unit: "MINUTES") {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+        
+        stage("Docker: Build Images") {
+            steps {
+                dir('backend') {
+                    sh "docker build -t zahramurtaza/wanderlust-backend-beta:${params.BACKEND_IMAGE_TAG} ."
+                }
+                dir('frontend') {
+                    sh "docker build -t zahramurtaza/wanderlust-frontend-beta:${params.FRONTEND_IMAGE_TAG} ."
+                }
+            }
+        }
 
-    stage("Scan images with trivy){
-          steps{
-            trivy image "zahramurtaza/wanderlust-backend-beta:${BACKEND_IMAGE_TAG}"
-            trivy image "zahramurtaza/wanderlust-frontend-beta:${FRONTEND_IMAGE_TAG}"
-          }
+        stage("Scan images with trivy") {
+            steps {
+                sh """
+                    trivy image zahramurtaza/wanderlust-backend-beta:${params.BACKEND_IMAGE_TAG}
+                    trivy image zahramurtaza/wanderlust-frontend-beta:${params.FRONTEND_IMAGE_TAG}
+                """
+            }
+        }
+        
+        stage("Push to Dockerhub") {
+            steps {
+                sh """
+                    docker push zahramurtaza/wanderlust-backend-beta:${params.BACKEND_IMAGE_TAG}
+                    docker push zahramurtaza/wanderlust-frontend-beta:${params.FRONTEND_IMAGE_TAG}
+                """
+            }
+        }
     }
-    stage("Push to Dockerhub"){
-       sh "docker push zahramurtaza/wanderlust-backend-beta:${BACKEND_IMAGE_TAG} "
-       sh "docker push zahramurtaza/wanderlust-frontend-beta:${FRONTEND_IMAGE_TAG} "
-    }
-    }
-          
-    post{
-        success{
-          // after success of pipeline,do not delete the artifacts(report files created during this pipeline)
-            archiveArtifacts artifacts: '*.xml', followSymlinks: false
-          //start cd pipeline build and provide parameters
+     
+    post {
+        success {
+            // Artifacts archive karna
+            archiveArtifacts artifacts: '**/dependency-check-report.xml', followSymlinks: false
+            
+            // Downstream CD Job trigger karna
             build job: "Wanderlust-CD", parameters: [
                 string(name: 'FRONTEND_IMAGE_TAG', value: "${params.FRONTEND_IMAGE_TAG}"),
                 string(name: 'BACKEND_IMAGE_TAG', value: "${params.BACKEND_IMAGE_TAG}")
             ]
         }
     }
-  
 }
